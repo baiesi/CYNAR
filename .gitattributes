@@ -1,0 +1,9 @@
+# Paths excluded from `git archive` exports (used to build the public
+# baiesi/CYNAR release snapshot from this dev repo) -- dev-only material
+# that isn't part of the public package: internal working notes, and
+# slide/presentation assets that aren't a paper figure or reproducibility
+# artifact. See the release checklist for how this is used.
+docs/implementation_notes.md export-ignore
+notebooks/additional_visualization.ipynb export-ignore
+figures/noise_movie.mp4 export-ignore
+figures/noise_movie_xy.mp4 export-ignore

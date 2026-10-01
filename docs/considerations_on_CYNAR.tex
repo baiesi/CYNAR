@@ -1,0 +1,206 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{physics}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\newcommand{\traffic}{\mathcal{T}}
+\newcommand{\inflow}{\mathcal{G}}
+\newcommand{\MD}{{\mathsf{D}}}
+\newcommand{\xx}{{\bm{x}}}
+\newcommand{\score}{{\bm{s}}}
+\newcommand{\velo}{{\bm{v}}}
+\newcommand{\subs}{\Omega}
+
+\title{CYNAR: A Practical Guide}
+\author{Marco Baiesi \and Ivan Di Terlizzi}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document collects some practical considerations on the \texttt{cynar} package, which were born empirically, while building and validating the four example systems shipped with \texttt{cynar.simul} (\texttt{linear}, \texttt{hair}, \texttt{Lorenz}, \texttt{Lorenz96}).
+They include how to choose a fitting window for the traffic estimator, how the grid-based inflow-rate and $v^2$-method estimators can fail and how the package now guards against it, how the optional smoothing step is configured, and a system-by-system reference table for every example distributed with the package.
+We assume that the reader is familiar with the arxiv paper\footnote{M.~Baiesi and I.~Di Terlizzi, \emph{CYNAR: a trajectory-based estimator of entropy production}, arXiv:2609.39654.}. The recommendations below come from these four systems, where the true $\sigma$, $\traffic$, and $\inflow$ are known; treat them as a starting point on new data, not as a guarantee.
+\end{abstract}
+
+\tableofcontents
+
+\section{Traffic estimation}
+\label{sec:traffic}
+
+\subsection{The exact identity behind the correlation-derivative estimator}
+
+\texttt{cynar.traffic} estimates the diffusion tensor as $\MD = -\dot{\mathsf{C}}_*(0^+)$, the (negative) short-time derivative of the symmetrized correlation matrix. This identity is \emph{exact} for any stationary diffusion with state-independent $\MD$. The same fit also yields the second time derivative $\ddot{\mathsf{C}}_*(0^+)$, which ultimately gives the traffic,
+\begin{align}
+\label{traffic}
+\traffic
+&= -\frac 1 4 \sum_{i,j}(\MD^{-1})^{ij}\,\ddot C_*^{ij}(0^+)= -\frac 1 4 \Tr\left[\MD^{-1}\ddot{\mathsf{C}}_*(0^+)\right]\,.
+\end{align}
+
+%not only for linear (Ornstein-Uhlenbeck) systems, as one might guess from the fact that it is usually first derived and validated on linear examples; it follows directly from stationarity, with no linearity assumption anywhere. This matters in practice because the \texttt{hair}, \texttt{Lorenz} and \texttt{Lorenz96} examples are genuinely nonlinear, and we rely on this identity holding for them.
+
+\subsection{Model order (\texttt{Ne}, \texttt{Ng}): richer is not safer}
+\label{sec:model-order}
+
+The fit model is a sum of \texttt{Ne} terms $\exp(-s_\ell t - r_\ell t^2)\times$(degree-\texttt{Ng} polynomial in $t$). The originally-used default, \texttt{Ne=2, Ng=2} (10 free nonlinear parameters), is prone to \emph{multimodal} behavior on systems whose correlation function has more than one relevant timescale. Checked concretely on the \texttt{linear} example (a $2\times2$ linear system with two distinct eigenvalues/relaxation rates): repeated fits on statistically equivalent data (same underlying process, different random seeds or trajectory lengths) gave traffic estimates $\traffic$ ranging from about $1.7$ to $3.3$ for a true value of $2.4$. Importantly, this scatter did \emph{not} shrink when the trajectory length was increased fivefold, ruling out ordinary statistical noise as the explanation. More likely, the nonlinear optimizer is landing in different local minima on different runs of an otherwise well-behaved fit problem.
+Switching to \texttt{Ne=1, Ng=1} (a single $\exp(-st-rt^2)(a_0+a_1t)$ term, 4 free parameters) resolved this: repeated fits then agreed with each other and with the true value to within about $15\%$, consistently. 
+
+\textbf{Recommendation}: default to \texttt{Ne=1, Ng=1}, and move to a richer model only when $\traffic(H)$ fails to show a plateau over any reasonable $H$ range (Sec.~\ref{sec:window}), as happens for \texttt{hair}; in that case, check fit stability across independent trajectory slices/seeds before trusting a single fit.
+\texttt{cfg.ExpPolyCfg}'s dataclass default is \texttt{Ne=1, Ng=1}, matching every result in the arxiv paper.
+
+\subsection{The fit window ($k_1,k_2$, \texttt{H}) is system-dependent}
+\label{sec:window}
+
+Only lags $t\ge t_{k_1}$ enter the fit (\texttt{WindowCfg.i1} in the code, default $k_1=2$), which excludes the lags most sensitive to measurement noise. The window then extends to $t_{k_2}$ for as long as $|C_*(t)|$ stays within a fraction $H$ of $|C_*(t_{k_1})|$ (\texttt{correl.auto\_window}). There is no universal good choice of $(k_1, H)$: it must match how the specific system's own correlation function actually decays -- \texttt{hair}, for instance, turns negative after a short time (an oscillatory overshoot that a single exp-poly term cannot capture) and needs a correspondingly small $H$.
+
+\noindent\textbf{Practical procedure:} sweep $H$ over a plausible range on your own data (e.g.~$H\in[0.02,0.5]$), plot $\traffic(H)$, and look for a plateau: pick $H$ from the flattest, most stable region rather than a fixed default. If no such plateau exists over any reasonable range, suspect a multi-timescale or oscillatory correlation function and narrow the search (smaller $k_1$, smaller $H$ range), or increase the complexity of the fitting functions by setting $N_e=2$ and/or $N_g=2$ or higher (Sec.~\ref{sec:model-order}). Section~\ref{sec:configtable} lists the values actually used for each example.
+
+\subsection{Automating the choice: minimizing across-chunk variance is a useful default, not a guarantee}
+\label{sec:H-autoselect}
+
+In practice we automate the sweep above and split the trajectory into independent chunks, fit $\traffic(H)$ on each chunk separately for every $H$ in the sweep, and pick the $H^\star$ with the smallest standard deviation of $\traffic$ \emph{across} chunks (\texttt{common.pick\_stable\_Tr} in the companion notebooks). Checked against known ground truth, this criterion lands on the actual lowest-bias $H$ in most cases we examined.
+
+It is not, however, a bias guarantee. Minimizing variance selects for consistency, not correctness, and the two coincide only when the estimator's main failure mode is noise rather than a systematic fitting artifact. 
+
+\textbf{Recommendation:} use the across-chunk-variance minimizer as a default that removes the need to hand-tune every sweep, but when ground truth is available for even one representative parameter point, use it to confirm the selector's choice before trusting it across an entire swept family.
+
+\section{Inflow-rate estimation}
+\label{sec:inflow}
+
+\texttt{cynar.inflow.grid\_inflow} bins the trajectory onto an axis-aligned grid of cell size $\Delta x$ (\texttt{side}). The $n$ recorded states give $n-1$ midpoints between consecutive states, binned on the grid; a cell $c$ visited by $n_c$ of these midpoints has occupation probability $p_c=n_c/(n-1)$ and density $\rho_c=p_c/\mathcal V$ ($\mathcal V$ the cell volume, the product of the per-axis cell sizes), and its score $\score_c$ is the finite-difference gradient of $\ln\rho$ across neighboring cells -- which requires flooring $\rho_c$ at a numerical floor $\epsilon=10^{-300}$ before taking the logarithm, since some cells receive zero visits (Section~\ref{sec:boundary} below). Only cells with $n_c>n_{\min}$, finite score, and finite local mean velocity $\velo_c$ (Section~\ref{sec:v2}) enter the raw, unsmoothed estimators
+\begin{equation}
+\inflow = \!\!\sum_{c:\,n_c>n_{\min}}\!\! p_c\,\score_c\cdot(\MD\,\score_c) \, ,
+\qquad
+\sigma_{v^2} = \!\!\sum_{c:\,n_c>n_{\min}}\!\! p_c\,\velo_c\cdot(\MD^{-1}\velo_c) \, ,
+\end{equation}
+sharing the same binned grid, which is what makes their cell-size-stability comparison (Section~\ref{sec:v2}) meaningful.
+
+\subsection{Grid-boundary score artifacts (fixed)}
+\label{sec:boundary}
+
+As just noted, a cell adjacent to an empty neighbor computes its log-density against this same floored value, $\rho\to\epsilon=10^{-300}$. A finite-difference gradient taken across such a boundary produces an artifact of magnitude
+\begin{equation}
+g_{\rm artifact} \approx \frac{\log(1/\epsilon)}{2\,\Delta x} = \frac{690.8}{2\,\Delta x} \, ,
+\end{equation}
+which is not a real score value at all, just a discretization artifact. This is normally caught by the score-clipping threshold \texttt{InflowCfg.thr\_g} (default $200$), which zeroes any score component whose magnitude exceeds it; \emph{but} $g_{\rm artifact}$ \emph{shrinks} as $\Delta x$ grows, so past a computable crossover cell size,
+\begin{equation}
+\Delta x_c = \frac{\log(1/\epsilon)}{2\cdot\texttt{thr\_g}} \, ,
+\end{equation}
+($\Delta x_c \approx 1.73$ for the default \texttt{thr\_g=200}) the artifact slips \emph{under} the clip and survives into the final sum, where it gets squared and weighted by $\MD$. Just past this crossover, this can produce an artificial explosion in the $\inflow$ estimate (a two-order-of-magnitude blow-up was observed for \texttt{hair}), unless \texttt{thr\_g} is lowered accordingly.
+
+\textbf{Fix, now in the package:} \texttt{cynar.\_grid.sparse\_neighbor\_mask} identifies grid cells whose finite-difference score touches a sparse or empty neighbor (using the same occupancy threshold \texttt{n\_min} used elsewhere) and zeroes their score \emph{outright}, before any magnitude-based clipping; this is independent of cell size or $\MD$'s magnitude by construction, unlike a fixed clip. \texttt{thr\_g} is retained purely as a secondary safety net for other sources of noise (e.g.\ a cell count just above \texttt{n\_min} still giving a noisy density estimate); do not rely on it alone to catch boundary artifacts.
+
+\subsection{The safety-net threshold does not scale with $\MD$}
+
+Even where the boundary-artifact fix above does not apply, remember that \texttt{thr\_g} bounds each score \emph{component}, while the inflow-rate integral sums $D_{ii}\times(\text{score}_i)^2$ over all dimensions. For a system with large $\MD$ entries and/or high dimension, a small number of cells with scores near (but under) the clip can still dominate the sum once weighted by $\MD$ and summed over many dimensions. If you see occasional wildly-off inflow-rate estimates that don't fit the boundary-artifact mechanism above, check whether this is the cause: a $\MD$-aware threshold (e.g.\ bounding each cell's contribution $D_{ii}\,g_i^2$ directly) would be a more robust general fix, not yet implemented.
+
+\subsection{Choosing $\Delta x$ for a swept parameter family}
+\label{sec:dx-family}
+
+A single fixed cell size $\Delta x$ does not automatically suit every point of a swept parameter family. 
+
+\textbf{Fix:} rescale $\Delta x$ per parameter point by the ratio of that point's spread to the reference point's, using a robust per-dimension estimate of spread, e.g.\\ $\texttt{side}_0(\beta) = \texttt{side}_{\rm eq}\times\mathrm{gmean}(\mathrm{std}(X_\beta))/\mathrm{gmean}(\mathrm{std}(X_{\rm ref}))$ (geometric mean of the per-axis standard deviation, to get a single scalar scale factor from a possibly anisotropic spread). This resolved the blow-up and improved most points across the sweep, without needing to change the tested range of cell-size multipliers itself. 
+
+\textbf{Recommendation:} for any swept parameter family, do not assume one cell size fits the whole family: check how much the stationary distribution's spread varies across the sweep, and rescale $\Delta x$ accordingly if it varies by more than $\sim50\%$.
+
+
+\subsection{No universal blind heuristic for $\Delta x$ without ground truth}
+\label{sec:dx-blind}
+
+Since a $\Delta x$ selector needs a variance-like signal that is not always trustworthy, we tested a purely ``blind'' heuristic that needs no sweep at all: set $\Delta x$ to roughly one-tenth of the trajectory's excursion in each direction (e.g. $\mathrm{std}(X)/10$ per axis, rounded to a convenient number). Checked against three example systems, this heuristic worked well for \texttt{hair}, was roughly right (same order of magnitude as the actual best $\Delta x$) for \texttt{Lorenz}, but was off by a factor of $4$--$5$ (recommending a $\Delta x$ far too fine) for \texttt{linear}. \textbf{Conclusion: no universal blind cell-size rule was found; some form of sweep against a stability or ground-truth signal remains necessary.}
+
+\subsection{A starting point for the sweep, on unfamiliar data}
+\label{sec:dx-propose}
+
+Given the conclusion above, \texttt{cynar.inflow.propose\_cell\_sizes} does not try to guess $\Delta x$ outright; instead it proposes a base cell size $\Delta x_0$, set from each dimension's interquartile range divided by a target number of bins per axis (default $10$), together with a handful of multipliers ($0.5$--$2\times$ by default) to sweep around it, in the exact form expected by \texttt{sweep\_cellsize}. This, along with \texttt{cynar.data\_io.load\_trajectory} (for reading a trajectory file, optionally with a leading time column, and inferring $dt$) and an automatic skip of this whole grid/inflow step above a configurable dimension, is wired into \texttt{notebooks/template\_your\_data.ipynb}: a generic template for running \texttt{cynar} on your own data rather than one of the shipped examples. As with any starting point, still inspect the resulting stability sweep rather than trusting $\Delta x_0$ on its own.
+
+\section{Smoothing}
+\label{sec:smoothing}
+
+The optional Nadaraya-Watson smoothing step produces $\tilde\inflow$ \footnote{Here, the tilde symbol in $\tilde\inflow$ was used originally in the code to denote smoothed quantities and does not refer to quantities obtained from a subsets of coordinates, as in the arxiv paper.} (and the $v^2$-method's $\sigma_{v^2,\rm smooth}$, Section~\ref{sec:v2}) by locally averaging the raw binned fields over neighboring cells. Two independent bugs were found while building it; both mattered, and fixing only one was not enough. Section~\ref{sec:smooth-construction} gives the construction as it stands now, fixes included; Sections~\ref{sec:bandwidth-fix}--\ref{sec:sparse-smoothing} are the bug-diagnosis narrative behind it.
+
+\subsection{The smoothed-field construction}
+\label{sec:smooth-construction}
+
+The smoothing is a Nadaraya-Watson, Gaussian-kernel regression, restricted to occupied cells ($n_c>n_{\min}$) only, so that a thin or curved density support -- a chaotic attractor's, in particular -- is not diluted by unvisited neighboring cells (Section~\ref{sec:sparse-smoothing}). All fields are smoothed with the same bandwidth $h=Q\,\Delta x$, a multiple of the grid's own cell size (Section~\ref{sec:bandwidth-fix}), so that the smoothing radius expressed in cells stays comparable across systems and cell sizes; every example in the arxiv paper uses $Q=0.5$. Cell $c'$ enters the neighborhood of cell $c$ with Gaussian weight
+\begin{equation}
+w_{cc'} = \exp\!\Big[-\tfrac12\textstyle\sum_i\big((x_c^i-x_{c'}^i)/h^i\big)^2\Big] \, ,
+\end{equation}
+kept only while $w_{cc'}\ge w_{\min}$ (equivalently, within a radius of $\sqrt{2\ln(1/w_{\min})}$ bandwidths); we use $w_{\min}=e^{-3}$ throughout (\texttt{SmoothingCfg.w\_min}). For any field $g_c$ defined on occupied cells, denote by $\mathcal S[g]_c=\sum_{c'}w_{cc'}g_{c'}/\sum_{c'}w_{cc'}$ its smoothed version.
+
+The smoothed density is $\bar\rho=\mathcal S[\rho]$. We do not smooth $\score$ and $\velo$ directly; instead each is first combined with the square root of the smoothed density, since $\int d\xx\,\rho\,\score\cdot\MD\score=\int d\xx\,(\sqrt\rho\,\score)\cdot\MD(\sqrt\rho\,\score)$ (and similarly for $\velo$), which absorbs the density weight into the field so that the final estimators below become plain sums over cells:
+\begin{align}
+\tilde\score = \mathcal S\big[\sqrt{\bar\rho}\;\mathcal S[\score]\big] \, ,
+\qquad
+\tilde\velo = \mathcal S\big[\sqrt{\bar\rho}\;\velo\big] \, .
+\end{align}
+That is, the density-weighted field is smoothed once in both cases, and the raw score is also smoothed once before being weighted\footnote{Since two Gaussian smoothings with the same kernel are approximately equivalent to one with a bandwidth larger by $\sqrt2$, the score ends up effectively smoothed on a somewhat larger scale than the velocity, though both use the same $Q$.}. The smoothed estimators are then
+\begin{align}
+\tilde\inflow = \mathcal V\!\!\sum_{c:\,\bar\rho_c>\rho_{\min}}\!\!\tilde\score_c\cdot(\MD\,\tilde\score_c) \, ,
+\qquad
+\sigma_{v^2,\rm smooth} = \mathcal V\!\!\sum_{c:\,\bar\rho_c>\rho_{\min}}\!\!\tilde\velo_c\cdot(\MD^{-1}\tilde\velo_c) \, ,
+\end{align}
+with $\rho_{\min}=n_{\min}/[(n-1)\mathcal V]$ the same minimal-occupancy floor as the raw grid (Section~\ref{sec:inflow}).
+
+\subsection{Bandwidth must be tied to cell size, not to the raw data's spread (fixed)}
+\label{sec:bandwidth-fix}
+
+The smoothing bandwidth used to be $Q\times\mathrm{IQR}(\text{data})$, a fraction of the trajectory's own interquartile spread, with \emph{no relationship at all} to the chosen grid cell size $\Delta x$. Since $\Delta x$ is chosen per system and per sweep point independently of the data's raw physical scale, the resulting smoothing radius \emph{in cells} (radius $\approx 2.45\times Q\times\mathrm{IQR}/\Delta x$, where $2.45$ is the neighbor-inclusion radius set by $w_{\min}=e^{-3}$) varied wildly across examples for the same nominal $Q$: about $1.6$--$2.2$ cells for \texttt{linear}, but $17$--$24$ cells for \texttt{hair} (whose IQR happens to be numerically large in its physical units). At that width, smoothing averages the score field, which is roughly antisymmetric around the density mode, down to nearly zero: this is not a smoothed estimate of $\inflow$, it is an over-smoothed one (checked: \texttt{hair}'s $\tilde\inflow$ was $\approx36$--$70$ against a true value of $\approx145$ before the fix below).
+
+\textbf{Fix, now in the package:} bandwidth $h=Q\,\Delta x$, as given in Section~\ref{sec:smooth-construction}, in both\\ \texttt{inflow.grid\_inflow} and \texttt{v2method.grid\_v2}. Default $Q=0.5$ for all of \texttt{rho}, \texttt{nu}, \texttt{g} (\texttt{cfg.InflowCfg.Q}), tuned empirically across \texttt{linear}, \texttt{hair}, \texttt{Lorenz} (Section~\ref{sec:configtable} gives the full picture, including where $Q=0.5$ is not quite enough).
+
+\subsection{Smoothing over sparse or fractal supports needs occupied-cells-only neighbors (fixed, with a residual limitation)}
+\label{sec:sparse-smoothing}
+
+Even after the fix above, \texttt{Lorenz}'s smoothed $\tilde\inflow$ remained badly suppressed, and got \emph{worse}, not better, as the smoothing bandwidth increased. Diagnosis: the neighbor search for smoothing ran over the entire rectangular grid (the Cartesian product of per-axis bin edges), not just the occupied cells. For a distribution concentrated on a thin or curved region of state space, a chaotic attractor's fractal support in particular, most of that rectangular bounding box is empty. Checked concretely: \texttt{Lorenz}'s grid was only $\approx10\%$ occupied versus $\approx48\%$ for \texttt{hair} at comparable resolution, and \texttt{Lorenz}'s neighbor counts for the smoothing kernel came out about $3\times$ larger than \texttt{hair}'s for the \emph{same} nominal bandwidth, almost entirely extra empty (``phantom'') cells, not real structure. Averaging those in as literal zero-valued data dilutes the smoothed field.
+
+\textbf{Fix, now in the package:} the neighbor search, and the smoothed quantities themselves, are restricted to occupied cells only (\texttt{counts > n\_min}, already reflected in Section~\ref{sec:smooth-construction}); results are scattered back onto the full grid only afterward, for downstream plotting.
+
+\textbf{Residual limitation (not yet fully resolved):} even with both fixes, \texttt{Lorenz}'s smoothed $\tilde\inflow$ remains the least accurate of the systems tested, roughly $30$--$70\%$ below the true value across a cell-size sweep, versus $2$--$15\%$ for \texttt{linear} and \texttt{hair}. This looks like a dimensionality effect that has not yet been fully characterized: a fixed bandwidth multiplier $Q$ admits a ball of $\sim(2.45\,Q)^N$ cells in $N$ dimensions, so the \emph{effective} neighbor count for a given $Q$ grows sharply with dimension even after restricting to occupied cells: a 3-dimensional system like \texttt{Lorenz} likely needs a smaller $Q$ than a 2-dimensional one for a comparable effective smoothing radius, and we have not yet derived or tuned a per-dimension rule. This affects only the \emph{smoothed} inflow-rate/$v^2$-method variants; the raw (unsmoothed) grid estimate, and the grid-free traffic-only route used for high-dimensional systems (arxiv paper, Lorenz-96 example), are unaffected.
+
+\section{The $v^2$-method}
+\label{sec:v2}
+
+\texttt{cynar.v2method} implements the comparison baseline used throughout the arxiv paper: $\sigma_{v^2} = \langle\bm v\cdot(\MD^{-1}\bm v)\rangle$, where $\bm v(\bm x) = \bm A(\bm x) - \MD\,\bm s(\bm x)$ is the local mean velocity (equivalently, the steady-state probability current divided by the density), following Gnesotto, Mura, Gladrow \& Broedersz's review of broken-detailed-balance estimators. It shares grid/binning code (\texttt{cynar.\_grid}) with \texttt{inflow.grid\_inflow}, so both estimators read off \emph{exactly the same cells} for a given system and $\Delta x$: this is what makes a cell-size-stability comparison between the two methods meaningful rather than an artifact of using different discretizations. Both smoothing fixes in Section~\ref{sec:smoothing} apply identically to \texttt{v2method.grid\_v2}'s smoothed variant, $\sigma_{v^2,\rm smooth}$; the boundary-artifact fix (Section~\ref{sec:boundary}) is inflow-specific (it concerns the score, which $v^2$ does not use) and has no $v^2$-method analog.
+
+\section{Partial observation}
+\label{sec:partial}
+
+All estimators can be applied to any subset $\subs$ of the recorded coordinates. The block $\MD_\subs$ follows from the correlations of $\xx_\subs$ and is always invertible, and $\max(4\traffic^\subs+\inflow^\subs,0)$ bounds $\sigma$ from below for any $\MD$. When $\MD_\subs$ is block diagonal, the bound can also be applied to each block separately, and the larger of the two results can be used. The $v^2$ method applied to $\xx_\subs$ yields $\sigma_{v^2}^\subs$, which is a lower bound as well but vanishes when a single coordinate is observed, and whose finite-sample bias can push it above the bound at small cell sizes. For high-dimensional data, where the grid becomes infeasible, the traffic-only bound $\max(4\traffic^\subs,0)$ remains available.
+
+In code, this only means running the usual pipeline on the observed columns \texttt{X[:, subset]} alone: \texttt{traffic.compute\_traffic} for $\MD_\subs$ and $\traffic^\subs$, then \texttt{inflow.grid\_inflow} or \texttt{v2method.grid\_v2} for $\inflow^\subs$ or $\sigma_{v^2}^\subs$, always refitting $\MD_\subs$ from these coordinates' \emph{own} correlations rather than slicing it out of a full-system fit. \texttt{common.honest\_partial\_estimate} wraps exactly this, and \texttt{03\_lorenz.ipynb}'s partial-observation cells work through it end to end.
+
+\section{Per-system configuration reference}
+\label{sec:configtable}
+
+Configuration actually used to produce every figure in the arxiv paper. All traffic fits used \texttt{Ne=1, Ng=1} (Section~\ref{sec:model-order}) except where noted.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lllll@{}}
+\toprule
+System & traffic $(k_1, H)$ & inflow \texttt{side}$_0$ & smoothing $Q$ & \texttt{thr\_g} \\
+\midrule
+\texttt{linear} & $2$, $0.05$--$0.5$ & $(0.5, 0.3)$ & $0.5$ & $200$ \\
+\texttt{hair} & $2$, $0.02$--$0.1$ & $(0.5, 0.5)$ & $0.5$ & $200$ \\
+\texttt{Lorenz} ($N{=}3$) & $2$, $0.05$--$0.4$ & $(0.5,0.5,0.5)$ & $0.5$ & $200$ \\
+\texttt{Lorenz96} ($N{=}4$--$25$) & $2$, $0.05$ & \emph{n/a (traffic only)} & \emph{n/a} & \emph{n/a} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Open items}
+\label{sec:open}
+
+\begin{itemize}
+\item \textbf{Smoothing's residual dimension-dependence} (Section~\ref{sec:sparse-smoothing}): no per-dimension rule for $Q$ derived yet, only the qualitative $\sim Q^N$ scaling argument.
+\item \textbf{A $\MD$-aware \texttt{thr\_g}} bounding each cell's contribution to the inflow-rate sum directly (rather than each score component's raw magnitude) would be a more robust general fix than the current fixed threshold; not implemented, since the boundary-artifact fix (Section~\ref{sec:boundary}) already addresses the specific failure mode found in practice.
+\end{itemize}
+
+\end{document}

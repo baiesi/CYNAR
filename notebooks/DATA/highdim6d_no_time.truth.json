@@ -1,0 +1,6 @@
+{
+ "Tr_true": 2.7000000000000006,
+ "sigma_true": 14.400000000000002,
+ "G_true": 3.5999999999999996,
+ "note": "Three independent copies of the paper's own Phi=2, alpha=0.2 Brownian vortex (D=I per block), stacked block-diagonally -- exactly 3x the 2D nonequilibrium example's Tr_true/sigma_true/G_true. sigma_true/G_true are exact (Lyapunov-based); the inflow step is skipped for this file's d=6 in the template notebook regardless."
+}

@@ -1,0 +1,6 @@
+{
+ "Tr_true": 12.378479541229659,
+ "sigma_true": 55.47575868154172,
+ "G_true": 5.0,
+ "note": "Monte Carlo reference (along-trajectory Sekimoto average on this same trajectory), not a closed form -- Lorenz is nonlinear/chaotic."
+}

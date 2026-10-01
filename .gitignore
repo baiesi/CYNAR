@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+*.nbc
+*.nbi
+.ipynb_checkpoints/
+
+# editor lock/autosave files (Emacs)
+.#*
+\#*\#
+
+# LaTeX build artifacts (docs/*.pdf is the tracked, committed output)
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.toc
+
+# personal backups, not part of the project
+/BU/
+
+# scratch notebooks
+*PROVA*

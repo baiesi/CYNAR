@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use CYNAR, please cite the paper below, and the method paper: I. Di Terlizzi, Phys. Rev. Lett. (2025), doi:10.1103/fsph-437v."
+title: "CYNAR: Computation Yields Nonequilibrium Analysis and Reconstruction"
+type: software
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/baiesi/CYNAR"
+authors:
+  - family-names: Baiesi
+    given-names: Marco
+  - family-names: Di Terlizzi
+    given-names: Ivan
+abstract: "Estimates the entropy production rate of overdamped diffusive systems from trajectory data alone, as sigma = 4 * traffic + inflow rate."
+preferred-citation:
+  type: article
+  title: "CYNAR: a trajectory-based estimator of entropy production"
+  authors:
+    - family-names: Baiesi
+      given-names: Marco
+    - family-names: Di Terlizzi
+      given-names: Ivan
+  year: 2026
+  journal: "arXiv preprint"
+  identifiers:
+    - type: other
+      value: "arXiv:2609.39654"
+      description: "arXiv preprint"
+  doi: "10.48550/arXiv.2609.39654"
+  url: "https://arxiv.org/abs/2609.39654"
